@@ -1,192 +1,311 @@
-const { sendMessage } = require('../services/whatsappService'); // ✅ Usar sendMessage consistentemente
+const { checkIfRegistered } = require('../utils/validationFlow');
+const {
+  startRegistration,
+  askEmail,
+  askBirthDate,
+  askExpeditionDate,
+  saveRegistration,
+  getTempData,
+  setTempData
+} = require('../utils/registrationFlow');
 
-// Procesar mensaje entrante (viene del webhook)
-const processIncomingMessage = async (messageData) => {
+const { showMainMenuWelcome, showMainMenu, formatResponseForCli } = require('../utils/menuFlows');
+const { sendMessage } = require('../services/whatsappService');
+
+// Modelo de paciente
+const Patient = require('../models/Patient');
+
+// Estado actual del contacto
+const conversationState = {}; // Ej: { "573155923440@c.us": "dni_requested" }
+
+// Datos temporales mientras se registra
+const tempRegistration = {};
+
+// Cache de mensajes procesados (evitar duplicados)
+const processedMessages = new Set();
+
+// Reinicio automático tras inactividad
+const conversationTimers = {};
+
+function resetStateAfterTimeout(contact) {
+  if (conversationTimers[contact]) clearTimeout(conversationTimers[contact]);
+
+  conversationTimers[contact] = setTimeout(() => {
+    console.log(`⏳ Conversación con ${contact} reiniciada por inactividad`);
+    conversationState[contact] = 'initial';
+    delete tempRegistration[contact];
+    delete conversationTimers[contact];
+  }, 5 * 60 * 1000); // 5 minutos sin actividad → reinicia conversación
+}
+
+async function processIncomingMessage(messageData) {
+  const { from, body } = messageData;
+
+  // Si ya se procesó este mensaje, ignora
+  const msgKey = `${from}-${body.trim()}`;
+  if (processedMessages.has(msgKey)) {
+    console.log(`🔁 Mensaje duplicado detectado. Saltando...`);
+    return;
+  }
+  processedMessages.add(msgKey);
+  resetStateAfterTimeout(from);
+
   console.log('📩 MENSAJE RECIBIDO:');
-  console.log('- De:', messageData.from);
-  console.log('- Contenido:', messageData.body);
+  console.log('- De:', from);
+  console.log('- Contenido:', body);
   console.log('- Tipo:', messageData.type);
 
   try {
-    // Extraer número de teléfono y texto del mensaje
-    const phoneNumber = messageData.from;
-    const messageText = messageData.body;
+    const normalized = body.toLowerCase().trim();
 
-    // Procesar con la lógica del chatbot
-    const response = await handleChatFlow(phoneNumber, messageText);
-    
-    if (response) {
-      // Si la respuesta es un objeto interactivo, convertirla a texto simple
-      const textResponse = formatResponseForCli(response);
-      
-      // ✅ Usar sendMessage consistentemente
-      await sendMessage(phoneNumber, textResponse);
-      console.log('✅ Respuesta enviada:', textResponse);
+    // Reinicio manual del chatbot
+    if (['hola', 'hi', 'menu', 'inicio', 'salir'].includes(normalized)) {
+      console.log(`🔄 Usuario escribió "${normalized}" → Reiniciando conversación con ${from}`);
+      conversationState[from] = 'initial';
+      delete tempRegistration[from];
+
+      const welcomeMessage = showMainMenuWelcome(from);
+      await sendMessage(from, formatResponseForCli(welcomeMessage));
+      return;
     }
 
+    // Si no hay estado definido, reinicia
+    let currentState = conversationState[from];
+    if (!currentState) {
+      conversationState[from] = 'initial';
+      currentState = 'initial';
+
+      const welcomeMessage = showMainMenuWelcome(from);
+      await sendMessage(from, formatResponseForCli(welcomeMessage));
+      return;
+    }
+
+    // Validación inicial
+    if (currentState === 'initial') {
+      if (['1', 'si'].includes(normalized)) {
+        conversationState[from] = 'dni_requested';
+        await sendMessage(from, '🔢 ¿Cuál es tu número de documento?');
+      } else if (['2', 'no'].includes(normalized)) {
+        conversationState[from] = 'register_name';
+        await sendMessage(from, startRegistration(from));
+      } else if (['3', 'no lo se'].includes(normalized)) {
+        conversationState[from] = 'check_dni_unknown';
+        await sendMessage(from, '🔢 ¿Cuál es tu número de documento?');
+      } else {
+        await sendMessage(from, '⚠️ Opción no reconocida. Elige 1, 2 o 3.');
+      }
+      return;
+    }
+
+    // Si dijo "Si" o "1"
+    if (currentState === 'dni_requested') {
+      const dni = normalized;
+      const { registered, patient } = await checkIfRegistered(dni);
+
+      if (!registered) {
+        conversationState[from] = 'not_registered';
+        await sendMessage(from, '❌ No estás registrado. ¿Quieres registrarte ahora?\n1. Sí\n2. No');
+        return;
+      }
+
+      setTempData(from, 'dni', dni);
+      conversationState[from] = 'dni_expiration_date';
+      await sendMessage(from, '📅 ¿Cuál es la fecha de expedición de tu documento?\nFormato: DD/MM/YYYY');
+      return;
+    }
+
+    // Fecha de expedición
+    if (currentState === 'dni_expiration_date') {
+      const expeditionDate = parseDate(normalized);
+      if (!expeditionDate) {
+        await sendMessage(from, '⚠️ Fecha inválida. Usa el formato DD/MM/YYYY');
+        return;
+      }
+
+      const tempData = getTempData(from);
+      const { dni } = tempData;
+
+      const patient = await Patient.findOne({ dni, dniExpeditionDate: { $eq: expeditionDate } });
+
+      if (!patient) {
+        await sendMessage(from, '❌ La fecha de expedición no coincide. Inténtalo nuevamente.');
+        return;
+      }
+
+      setTempData(from, 'patient', patient);
+      conversationState[from] = 'main_menu';
+      await sendMessage(from, formatResponseForCli(showMainMenu()));
+      return;
+    }
+
+    // Estado not_registered
+    if (currentState === 'not_registered') {
+      if (['1', 'si'].includes(normalized)) {
+        conversationState[from] = 'register_name';
+        await sendMessage(from, startRegistration(from));
+        return;
+      } else if (['2', 'no'].includes(normalized)) {
+        conversationState[from] = 'initial';
+        await sendMessage(from, formatResponseForCli(showMainMenuWelcome(from)));
+        return;
+      } else {
+        await sendMessage(from, '⚠️ Opción inválida. Escribe 1 para registrarte o 2 para volver atrás.');
+        return;
+      }
+    }
+
+    // Registro - nombre
+    if (currentState === 'register_name') {
+      setTempData(from, 'name', body);
+      conversationState[from] = 'register_email';
+      await sendMessage(from, askEmail(from));
+      return;
+    }
+
+    // Registro - correo
+    if (currentState === 'register_email') {
+      setTempData(from, 'email', body);
+      conversationState[from] = 'register_birth_date';
+      await sendMessage(from, askBirthDate(from));
+      return;
+    }
+
+    // Registro - fecha de nacimiento
+    if (currentState === 'register_birth_date') {
+      const birthDate = parseDate(normalized);
+      if (!birthDate) {
+        await sendMessage(from, '⚠️ Fecha inválida. Usa el formato DD/MM/YYYY');
+        return;
+      }
+
+      setTempData(from, 'birthDate', birthDate);
+      conversationState[from] = 'register_expedition_date';
+      await sendMessage(from, askExpeditionDate(from));
+      return;
+    }
+
+    // Registro - fecha de expedición
+    if (currentState === 'register_expedition_date') {
+      const expeditionDate = parseDate(normalized);
+      if (!expeditionDate) {
+        await sendMessage(from, '⚠️ Fecha inválida. Usa el formato DD/MM/YYYY');
+        return;
+      }
+
+      const tempData = getTempData(from);
+      const fullData = {
+        name: tempData.name,
+        dni: tempData.dni,
+        email: tempData.email || null,
+        birthDate: tempData.birthDate ? new Date(tempData.birthDate) : undefined,
+        expeditionDate: new Date(expeditionitionDate)
+      };
+
+      const result = await saveRegistration(from, fullData);
+      conversationState[from] = 'main_menu';
+      await sendMessage(from, result + '\n\n' + formatResponseForCli(showMainMenu()));
+      return;
+    }
+
+    // Menú principal
+    if (currentState === 'main_menu') {
+      switch (normalized) {
+        case '1':
+          await sendMessage(from, '📅 Escribe la fecha y hora para tu cita.');
+          break;
+        case '2':
+          const data = getTempData(from)?.patient;
+          if (data) {
+            await sendMessage(from, `📄 Tus datos:\nNombre: ${data.name}\nDocumento: ${data.dni}`);
+          }
+          break;
+        case '3':
+          await sendMessage(from, '📋 Aún no tienes historial de citas.');
+          break;
+        case '4':
+          conversationState[from] = 'initial';
+          await sendMessage(from, formatResponseForCli(showMainMenuWelcome(from)));
+          break;
+        default:
+          await sendMessage(from, '⚠️ Opción no válida. Elige 1, 2, 3 o 4.');
+      }
+      return;
+    }
+
+    // Estado desconocido
+    console.warn(`⚠️ Estado desconocido: ${currentState}`);
+    conversationState[from] = 'initial';
+    await sendMessage(from, '🔄 Tu sesión ha sido reiniciada. Vuelve a escribir "menu".');
+    return;
+
   } catch (error) {
-    console.error('❌ Error procesando mensaje:', error);
-    
-    // Enviar mensaje de error al usuario
+    console.error('❌ Error procesando mensaje:', error.message);
+
     try {
-      await sendMessage(messageData.from, '❌ Lo siento, hubo un error. Escribe "menu" para volver al inicio.');
-      console.log('⚠️ Mensaje de error enviado al usuario');
+      await sendMessage(from, '❌ Lo siento, hubo un error. Escribe "menu" para volver al inicio.');
     } catch (sendError) {
-      console.error('❌ Error enviando mensaje de error:', sendError);
+      console.error('❌ Error enviando mensaje de error:', sendError.message);
     }
-  }
-};
 
-// 🤖 LÓGICA DEL CHATBOT - Adaptada a consultorio odontológico
-const handleChatFlow = async (phoneNumber, messageText) => {
-  const normalizedMessage = messageText.toLowerCase().trim();
-  
-  console.log(`🔄 Procesando mensaje de ${phoneNumber}: "${normalizedMessage}"`);
-  
-  // Mensaje de bienvenida
-  if (normalizedMessage === 'hola' || normalizedMessage === 'hi' || normalizedMessage === 'menu') {
-    return {
-      type: 'interactive',
-      body: '¡Hola! 👋 Bienvenido a nuestro consultorio odontológico.\n\n¿En qué puedo ayudarte hoy?',
-      buttons: [
-        { id: '1', title: '📅 Agendar cita' },
-        { id: '2', title: '💰 Precios' },
-        { id: '3', title: 'ℹ️ Información' }
-      ]
-    };
+    conversationState[from] = 'initial';
+    delete tempRegistration[from];
   }
-  
-  // Manejo de opciones numéricas y palabras clave
-  if (normalizedMessage === '1' || normalizedMessage.includes('cita') || normalizedMessage.includes('turno')) {
-    return '📅 **Agendar Cita**\n\nPara agendar tu cita, por favor compárteme:\n\n• Tu nombre completo\n• Fecha preferida\n• Tipo de tratamiento\n\n¿Cuándo te gustaría la cita?';
-  }
-  
-  if (normalizedMessage === '2' || normalizedMessage.includes('precio') || normalizedMessage.includes('costo')) {
-    return {
-      type: 'list',
-      body: '💰 Nuestros precios por tratamiento:',
-      sections: [{
-        title: 'Tratamientos',
-        rows: [
-          { id: 'limpieza', title: 'Limpieza dental', description: '$80.000' },
-          { id: 'resina', title: 'Resina', description: '$120.000' },
-          { id: 'endodoncia', title: 'Endodoncia', description: '$350.000' }
-        ]
-      }]
-    };
-  }
-  
-  if (normalizedMessage === '3' || normalizedMessage.includes('horario') || normalizedMessage.includes('hora')) {
-    return 'ℹ️ **Información del Consultorio**\n\n🕐 **Horarios:**\n• Lunes a Viernes: 8:00 AM - 6:00 PM\n• Sábados: 8:00 AM - 2:00 PM\n• Domingos: Cerrado\n\n📍 **Ubicación:**\nCalle 123 #45-67, Sogamoso, Boyacá\n\nEscribe "menu" para volver al inicio.';
-  }
-  
-  if (normalizedMessage.includes('ubicacion') || normalizedMessage.includes('direccion')) {
-    return '📍 **Nuestra Ubicación:**\n\nCalle 123 #45-67, Sogamoso, Boyacá\n\n¿Necesitas indicaciones específicas?\n\nEscribe "menu" para volver al inicio.';
-  }
-  
-  if (normalizedMessage.includes('gracias')) {
-    return '¡De nada! 😊 Estoy aquí para ayudarte. ¿Hay algo más en lo que pueda asistirte?\n\nEscribe "menu" para ver todas las opciones.';
-  }
-  
-  // Respuesta por defecto
-  return '🤖 **Consultorio Odontológico**\n\nSoy tu asistente virtual. Puedo ayudarte con:\n\n• 📅 Agendar citas\n• 💰 Información de precios\n• 🕐 Horarios de atención\n• 📍 Ubicación\n\nEscribe "menu" para ver las opciones o dime directamente qué necesitas.';
-};
+}
 
-// Convertir respuestas interactivas a texto simple para CLI
-const formatResponseForCli = (response) => {
-  // Si es string simple, devolverlo tal como está
-  if (typeof response === 'string') {
-    return response;
-  }
-  
-  // Si es objeto interactivo, convertir a texto
-  if (response && response.type === 'interactive') {
-    let text = response.body + '\n\n';
-    
-    if (response.buttons && Array.isArray(response.buttons)) {
-      text += '👆 **Opciones disponibles:**\n';
-      response.buttons.forEach((button, index) => {
-        text += `${button.id || (index + 1)}. ${button.title}\n`;
-      });
-      text += '\n💬 Responde con el número de tu opción.';
-    }
-    
-    return text;
-  }
-  
-  // Si es lista desplegable, convertir a texto
-  if (response && response.type === 'list') {
-    let text = response.body + '\n\n';
-    
-    if (response.sections && Array.isArray(response.sections)) {
-      response.sections.forEach(section => {
-        text += `📋 **${section.title}:**\n`;
-        if (section.rows && Array.isArray(section.rows)) {
-          section.rows.forEach((row, index) => {
-            text += `${index + 1}. ${row.title}`;
-            if (row.description) {
-              text += ` - ${row.description}`;
-            }
-            text += '\n';
-          });
-        }
-      });
-      text += '\n💬 Responde con el número de tu opción.';
-    }
-    
-    return text;
-  }
-  
-  // Por defecto, convertir a string
-  return String(response);
-};
+// 🎨 Menú inicial con botones simulados
+function showMainMenuWelcome(contact) {
+  return {
+    type: 'interactive',
+    body: '👋 Bienvenido a nuestro consultorio odontológico.\n\n¿Estás registrado?',
+    buttons: [
+      { id: '1', title: '✅ Sí' },
+      { id: '2', title: '❌ No' },
+      { id: '3', title: '❓ No lo sé' }
+    ]
+  };
+}
 
-// Webhook endpoint - recibe mensajes del CLI
-const whatsappWebhook = async (req, res) => {
-  console.log('📩 WEBHOOK RECIBIDO:', JSON.stringify(req.body, null, 2));
-  
-  try {
-    const messageData = req.body;
-    
-    // Filtrar mensajes propios y de grupos
-    if (messageData.fromMe || messageData.isGroupMsg) {
-      console.log('📵 Mensaje filtrado (propio o de grupo)');
-      return res.status(200).json({ success: true, message: 'Mensaje filtrado' });
-    }
-    
-    // Filtrar mensajes que no son de texto
-    if (messageData.type !== 'chat') {
-      await sendMessage(messageData.from, '📝 Por favor, envía solo mensajes de texto.');
-      return res.status(200).json({ success: true, message: 'Tipo de mensaje no soportado' });
-    }
-    
-    // Procesar mensaje
-    await processIncomingMessage(messageData);
-    
-    res.status(200).json({ success: true });
-  } catch (error) {
-    console.error('❌ Error en webhook:', error);
-    res.status(500).json({ error: 'Error procesando webhook' });
-  }
-};
+// 🎨 Menú principal con botones simulados
+function showMainMenu() {
+  return {
+    type: 'interactive',
+    body: '🦷 Menú Principal\n¿Qué deseas hacer?',
+    buttons: [
+      { id: '1', title: '📅 Agendar Cita' },
+      { id: '2', title: '🔍 Consultar Datos' },
+      { id: '3', title: '📋 Historial de Citas' },
+      { id: '4', title: '🚪 Volver al inicio' }
+    ]
+  };
+}
 
-// Función para enviar mensaje manualmente
-const sendMessageManually = async (to, message) => {
-  try {
-    const textResponse = formatResponseForCli(message);
-    await sendMessage(to, textResponse);
-    console.log(`✅ Mensaje enviado a ${to}: ${textResponse}`);
-    return { success: true };
-  } catch (error) {
-    console.error('❌ Error enviando mensaje:', error);
-    return { success: false, error: error.message };
-  }
-};
+// 🧮 Función para convertir botones a texto plano
+function formatResponseForCli(response) {
+  if (typeof response === 'string') return response;
 
-module.exports = { 
-  processIncomingMessage,
-  whatsappWebhook,
-  sendMessage: sendMessageManually,
-  formatResponseForCli,
-  handleChatFlow // ✅ Exportar la función del chatbot
-};
+  let text = response.body + '\n\n';
+
+  if (response.buttons && Array.isArray(response.buttons)) {
+    text += '👆 Opciones disponibles:\n';
+    response.buttons.forEach((button, index) => {
+      text += `${index + 1}. ${button.title}\n`;
+    });
+    text += '\n💬 Responde con el número de tu opción.';
+  }
+
+  return text;
+}
+
+// 📅 Parsea fechas en formato DD/MM/YYYY
+function parseDate(input) {
+  const parts = input.split('/');
+  if (parts.length !== 3) return null;
+  const day = parseInt(parts[0]);
+  const month = parseInt(parts[1]) - 1; // Meses empiezan en 0
+  const year = parseInt(parts[2]);
+
+  const date = new Date(year, month, day);
+  return isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+module.exports = { processIncomingMessage };
