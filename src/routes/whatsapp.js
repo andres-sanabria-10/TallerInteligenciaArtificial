@@ -12,7 +12,6 @@ const {
  */
 router.post('/webhook', async (req, res) => {
   try {
-    console.log('🔔 Webhook recibido:', JSON.stringify(req.body, null, 2));
 
     let messageData = null;
 
@@ -28,7 +27,7 @@ router.post('/webhook', async (req, res) => {
       console.log('📱 Formato wa-automate detectado');
     }
 
-    // FORMATO 2: WhatsApp Business API (formato que enviaste)
+    // FORMATO 2: WhatsApp Business API
     else if (req.body.entry && req.body.entry[0] && req.body.entry[0].changes) {
       const changes = req.body.entry[0].changes[0];
       if (changes.value && changes.value.messages && changes.value.messages[0]) {
@@ -44,7 +43,7 @@ router.post('/webhook', async (req, res) => {
       }
     }
 
-    // FORMATO 3: Testing manual (formato simplificado)
+    // FORMATO 3: Testing manual
     else if (req.body.phone && req.body.message) {
       messageData = {
         from: req.body.phone,
@@ -55,8 +54,8 @@ router.post('/webhook', async (req, res) => {
       };
       console.log('📱 Formato de testing detectado');
     }
-    // FORMATO 4: wa-automate usando evento "onMessage"
-    // FORMATO 4: wa-automate usando evento "onMessage" o "onAnyMessage"
+
+    // FORMATO 4: wa-automate evento onMessage/onAnyMessage
     else if (req.body.data && req.body.data.from && req.body.data.body) {
       messageData = {
         from: req.body.data.from,
@@ -68,34 +67,26 @@ router.post('/webhook', async (req, res) => {
       console.log(`📱 Formato wa-automate (${req.body.event}) detectado`);
     }
 
-
-
-    // Verificar que tenemos datos válidos
+    // Validar mensaje básico
     if (!messageData || !messageData.from || !messageData.body) {
       console.log('⚠️ Formato de mensaje no reconocido o incompleto');
-      console.log('📋 Formatos soportados:');
-      console.log('1. wa-automate: { "from": "573155923440@c.us", "body": "hola", "type": "chat" }');
-      console.log('2. WhatsApp Business: { "entry": [{"changes": [{"value": {"messages": [{"from": "573155923440", "text": {"body": "hola"}}]}}]}] }');
-      console.log('3. Testing: { "phone": "573155923440", "message": "hola" }');
-
       return res.status(400).json({
         error: 'Datos de mensaje incompletos',
         receivedFormat: req.body,
         supportedFormats: {
           waAutomate: { from: "573155923440@c.us", body: "hola", type: "chat" },
-          businessAPI: { entry: [{ changes: [{ value: { messages: [{ from: "573155923440", text: { body: "hola" } }] } }] }] },
+          businessAPI: { entry: [{ changes: [{ value: { messages: [{ from: "573155923440", text: { body: "hola" } }] } }] }] }, // ← AQUÍ va el `}` y luego la coma
           testing: { phone: "573155923440", message: "hola" }
-        }
-      });
+        } });
     }
 
-    // Filtrar mensajes propios y de grupos
-    if (messageData.fromMe || messageData.isGroupMsg) {
-      console.log('📵 Mensaje filtrado (propio o de grupo)');
-      return res.status(200).json({ success: true, message: 'Mensaje filtrado' });
+    // Filtro de grupos
+    if (messageData.isGroupMsg) {
+      console.log('📵 Mensaje de grupo ignorado');
+      return res.status(200).json({ success: true, message: 'Mensaje de grupo filtrado' });
     }
 
-    // Filtrar mensajes que no son de texto
+    // Solo aceptar mensajes de texto
     if (messageData.type !== 'chat' && messageData.type !== 'text') {
       await sendMessage(messageData.from, '📝 Por favor, envía solo mensajes de texto.');
       return res.status(200).json({ success: true, message: 'Tipo de mensaje no soportado' });
@@ -107,20 +98,15 @@ router.post('/webhook', async (req, res) => {
       type: messageData.type
     });
 
-    // Procesar el mensaje
-    // Procesar con la lógica del chatbot
-    // ✅ USAR ESTO:
+    // Llamar al controlador del chatbot
     const { processIncomingMessage } = require('../controller/whatsappController');
     await processIncomingMessage(messageData);
-    // Responder que el webhook fue procesado correctamente
+
+    // Responder éxito al webhook
     res.status(200).json({
       success: true,
       message: 'Mensaje procesado correctamente',
-      processedData: {
-        from: messageData.from,
-        body: messageData.body,
-        type: messageData.type
-      },
+      processedData: messageData,
       timestamp: new Date().toISOString()
     });
 
@@ -143,7 +129,7 @@ router.post('/send', async (req, res) => {
     if (!to || !message) {
       return res.status(400).json({
         error: 'Se requieren los campos "to" y "message"',
-        example: { to: "573155923440", message: "Hola desde el API" }
+        example: { to: "573155923440@c.us", message: "Hola desde el API" }
       });
     }
 
@@ -200,68 +186,16 @@ router.get('/status', async (req, res) => {
 router.post('/init', async (req, res) => {
   try {
     await initWhatsApp();
-
     res.json({
       success: true,
       message: 'WhatsApp inicializado correctamente'
     });
-
   } catch (error) {
     res.status(500).json({
       error: 'Error inicializando WhatsApp',
       details: error.message
     });
   }
-});
-
-/**
- * Endpoint de prueba con ejemplos
- */
-router.get('/test', (req, res) => {
-  res.json({
-    message: '🤖 WhatsApp Bot API funcionando',
-    webhook: '/whatsapp/webhook',
-    endpoints: {
-      send: 'POST /whatsapp/send',
-      status: 'GET /whatsapp/status',
-      init: 'POST /whatsapp/init'
-    },
-    testingExamples: {
-      waAutomateFormat: {
-        url: 'POST /whatsapp/webhook',
-        body: {
-          from: "573155923440@c.us",
-          body: "hola",
-          type: "chat",
-          fromMe: false,
-          isGroupMsg: false
-        }
-      },
-      whatsappBusinessFormat: {
-        url: 'POST /whatsapp/webhook',
-        body: {
-          entry: [{
-            changes: [{
-              value: {
-                messages: [{
-                  from: "573155923440",
-                  text: { body: "hola" },
-                  type: "text"
-                }]
-              }
-            }]
-          }]
-        }
-      },
-      simpleTesting: {
-        url: 'POST /whatsapp/webhook',
-        body: {
-          phone: "573155923440",
-          message: "hola"
-        }
-      }
-    }
-  });
 });
 
 module.exports = router;
