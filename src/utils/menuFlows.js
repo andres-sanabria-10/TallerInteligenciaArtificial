@@ -11,8 +11,8 @@ function showMainMenu() {
     buttons: [
       { id: '1', title: '📅 Agendar Cita' },
       { id: '2', title: '🚫 Cancelar Cita' }, // ✅ CAMBIADO: Reemplaza "Consultar Datos"
-      { id: '3', title: '📋 Historial de Citas' },
-      { id: '4', title: '🚪 Volver al inicio' }
+      
+      { id: '3', title: '🚪 Volver al inicio' }
     ]
   };
 }
@@ -21,12 +21,13 @@ function showMainMenu() {
 function showMainMenuWelcome(contact) {
   return {
     type: 'interactive',
-    body: '👋 Bienvenido a nuestro consultorio odontológico.\n\n¿Estás registrado?',
+    body: '👋 Bienvenido a nuestro consultorio odontológico.\n\n 📌 Si deseas reiniciar el chat en cualquier momento, escribe *salir* o *reiniciar*. \n\n¿Estás registrado? ',
     buttons: [
       { id: '1', title: '✅ Sí' },
       { id: '2', title: '❌ No' },
       { id: '3', title: '❓ No lo sé' }
     ]
+    
   };
 }
 
@@ -273,20 +274,9 @@ async function handleMainMenuFlow(normalized, from) {
       console.log('🚫 Iniciando flujo de cancelación para:', userData.patient.name);
       return await handleCancelationFlow('cancelation_list', '', from);
       
-    case '3':
-      return {
-        message: `📋 Función de historial en desarrollo. 
-        
-Pronto podrás ver:
-• Todas tus citas pasadas
-• Citas pendientes
-• Historial de tratamientos
 
-${formatResponseForCli(showMainMenu())}`,
-        newState: null // ✅ CORREGIDO: Mantener en main_menu
-      };
       
-    case '4':
+    case '3':
       // Limpiar datos de sesión
       const tempDataToClean = getTempData(from);
       if (tempDataToClean) {

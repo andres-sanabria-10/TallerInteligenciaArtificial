@@ -90,7 +90,7 @@ async function processIncomingMessage(messageData) {
     const normalized = body.toLowerCase().trim();
 
     // Reinicio manual del chatbot
-    if (['hola', 'hi', 'menu', 'inicio', 'salir', 'help', 'ayuda'].includes(normalized)) {
+    if (['hola', 'hi', 'menu', 'inicio', 'salir'].includes(normalized)) {
       console.log(`🔄 Usuario escribió "${normalized}" → Reiniciando conversación con ${from}`);
       conversationState[from] = 'initial';
       clearTempData(from);

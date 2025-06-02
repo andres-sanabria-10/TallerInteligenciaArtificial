@@ -17,9 +17,9 @@ async function getCancelableAppointments(patientId) {
       status: { $in: ['pendiente', 'confirmada'] }, // Solo citas no canceladas/completadas
       start: { $gte: oneHourFromNow } // Solo citas con 1+ hora de anticipación
     })
-    .populate('doctorId', 'name')
-    .populate('serviceId', 'name duration')
-    .sort({ start: 1 }); // Ordenar por fecha más próxima
+      .populate('doctorId', 'name')
+      .populate('serviceId', 'name duration')
+      .sort({ start: 1 }); // Ordenar por fecha más próxima
 
     console.log(`📊 Encontradas ${appointments.length} citas cancelables`);
     return appointments;
@@ -37,11 +37,11 @@ function formatAppointmentsList(appointments) {
   }
 
   let message = '📋 Tus citas disponibles para cancelar:\n\n';
-  
+
   appointments.forEach((appointment, index) => {
     const startDate = new Date(appointment.start);
     const endDate = new Date(appointment.end);
-    
+
     // Formatear fecha y hora en zona horaria de Colombia
     const dateStr = startDate.toLocaleDateString('es-CO', {
       weekday: 'long',
@@ -50,13 +50,13 @@ function formatAppointmentsList(appointments) {
       day: 'numeric',
       timeZone: 'America/Bogota'
     });
-    
+
     const startTimeStr = startDate.toLocaleTimeString('es-CO', {
       hour: '2-digit',
       minute: '2-digit',
       timeZone: 'America/Bogota'
     });
-    
+
     const endTimeStr = endDate.toLocaleTimeString('es-CO', {
       hour: '2-digit',
       minute: '2-digit',
@@ -99,9 +99,9 @@ async function cancelAppointment(appointmentId, patientId) {
       patientId: patientId,
       status: { $in: ['pendiente', 'confirmada'] }
     })
-    .populate('patientId', 'name phone email')
-    .populate('doctorId', 'name')
-    .populate('serviceId', 'name');
+      .populate('patientId', 'name phone email')
+      .populate('doctorId', 'name')
+      .populate('serviceId', 'name');
 
     if (!appointment) {
       return {
@@ -113,7 +113,7 @@ async function cancelAppointment(appointmentId, patientId) {
     // Verificar que aún se puede cancelar (1 hora de anticipación)
     const now = new Date();
     const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
-    
+
     if (appointment.start < oneHourFromNow) {
       return {
         success: false,
@@ -122,42 +122,38 @@ async function cancelAppointment(appointmentId, patientId) {
     }
 
     // 📅 Preparar datos para el webhook de Google Calendar (estructura exacta requerida)
+    if (!appointment.eventId) {
+      return {
+        success: false,
+        message: '❌ Esta cita no tiene un eventId guardado. No se puede eliminar del calendario.'
+      };
+    }
+    const startDate = new Date(appointment.start);
+    const endDate = new Date(appointment.end);
     const webhookData = {
-      patient: {
-        name: appointment.patientId.name,
-        phone: appointment.patientId.phone,
-        email: appointment.patientId.email || ''
-      },
-      doctor: {
-        name: appointment.doctorId?.name || 'Doctor no especificado'
-      },
-      service: {
-        name: appointment.serviceId?.name || 'Servicio no especificado'
-      },
-      appointment: {
-        date: appointment.start.toISOString().split('T')[0], // YYYY-MM-DD
-        startTime: appointment.start.toLocaleTimeString('en-US', { 
-          hour12: false, 
-          hour: '2-digit', 
-          minute: '2-digit',
-          timeZone: 'America/Bogota'
-        }),
-        endTime: appointment.end.toLocaleTimeString('en-US', { 
-          hour12: false, 
-          hour: '2-digit', 
-          minute: '2-digit',
-          timeZone: 'America/Bogota'
-        }),
-        notes: appointment.notes || '',
-        status: 'cancelada' // Para cancelación
-      }
+      eventId: appointment.eventId,
+      email: appointment.patientId.email,
+      name: appointment.patientId.name,
+      date: startDate.toISOString().split('T')[0], // YYYY-MM-DD
+      startTime: startDate.toLocaleTimeString('es-CO', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'America/Bogota'
+      }),
+      endTime: endDate.toLocaleTimeString('es-CO', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'America/Bogota'
+      })
     };
 
     console.log('📤 Datos para webhook de cancelación:', JSON.stringify(webhookData, null, 2));
 
     // 🌐 Enviar webhook a Google Calendar
     const webhookSuccess = await sendCancelationWebhook(webhookData);
-    
+
     if (!webhookSuccess) {
       console.log('⚠️ Webhook falló, pero continuando con cancelación local...');
       // Decidir si continuar o fallar completamente
@@ -176,11 +172,11 @@ async function cancelAppointment(appointmentId, patientId) {
 
 📅 Detalles de la cita cancelada:
 🗓️ Fecha: ${appointment.start.toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}
-⏰ Hora: ${appointment.start.toLocaleTimeString('es-CO', { 
-  hour: '2-digit', 
-  minute: '2-digit',
-  timeZone: 'America/Bogota'
-})}
+⏰ Hora: ${appointment.start.toLocaleTimeString('es-CO', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'America/Bogota'
+      })}
 👨‍⚕️ Doctor: ${appointment.doctorId?.name || 'No especificado'}
 🦷 Servicio: ${appointment.serviceId?.name || 'No especificado'}
 
@@ -200,10 +196,10 @@ ${webhookSuccess ? 'La cita ha sido eliminada del calendario.' : '⚠️ Nota: L
 async function sendCancelationWebhook(webhookData) {
   try {
     const WEBHOOK_URL = 'https://hook.us2.make.com/icl53uhz3xl8ugp34pjkrjb8wuwhn7ju';
-    
+
     console.log('📤 Enviando webhook de cancelación a:', WEBHOOK_URL);
     console.log('📦 Payload:', JSON.stringify(webhookData, null, 2));
-    
+
     const response = await fetch(WEBHOOK_URL, {
       method: 'POST',
       headers: {
@@ -225,7 +221,7 @@ async function sendCancelationWebhook(webhookData) {
       console.error('   Status:', response.status);
       console.error('   Status Text:', response.statusText);
       console.error('   Response Body:', errorText);
-      
+
       // Log adicional para debugging
       if (response.status === 500) {
         console.error('🔍 Error 500 - Posibles causas:');
@@ -234,7 +230,7 @@ async function sendCancelationWebhook(webhookData) {
         console.error('   3. Módulo de Google Calendar mal configurado');
         console.error('   4. Permisos insuficientes en Google Calendar');
       }
-      
+
       return false;
     }
 
@@ -248,20 +244,20 @@ async function sendCancelationWebhook(webhookData) {
       console.log('✅ Webhook de cancelación enviado (respuesta en texto):', textResult);
       result = { message: textResult };
     }
-    
+
     return true;
 
   } catch (error) {
     console.error('❌ Error enviando webhook de cancelación:');
     console.error('   Error type:', error.name);
     console.error('   Error message:', error.message);
-    
+
     if (error.name === 'AbortError') {
       console.error('   Causa: Timeout - el webhook tardó más de 10 segundos');
     } else if (error.name === 'TypeError') {
       console.error('   Causa: Problema de red o URL inválida');
     }
-    
+
     return false;
   }
 }
@@ -269,7 +265,7 @@ async function sendCancelationWebhook(webhookData) {
 // 🎯 Flujo principal de cancelación
 async function handleCancelationFlow(currentState, body, from) {
   const tempData = getTempData(from);
-  
+
   if (!tempData || !tempData.patient) {
     return {
       message: '❌ Error: No se encontraron tus datos de sesión. Escribe "menu" para reiniciar.',
@@ -280,7 +276,7 @@ async function handleCancelationFlow(currentState, body, from) {
   // 📋 Mostrar lista de citas cancelables
   if (currentState === 'cancelation_list') {
     const appointments = await getCancelableAppointments(tempData.patient._id);
-    
+
     if (appointments.length === 0) {
       return {
         message: `❌ No tienes citas disponibles para cancelar.
@@ -304,11 +300,11 @@ ${createMainMenuMessage()}`,
   // 🎯 Seleccionar cita para cancelar
   if (currentState === 'cancelation_select') {
     const selection = body.trim();
-    
+
     // Validar que sea un número
     const appointmentIndex = parseInt(selection) - 1;
     const appointments = tempData.cancelableAppointments || [];
-    
+
     if (isNaN(appointmentIndex) || appointmentIndex < 0 || appointmentIndex >= appointments.length) {
       return {
         message: `⚠️ Opción inválida. Por favor escribe un número del 1 al ${appointments.length}.`,
@@ -328,7 +324,7 @@ ${createMainMenuMessage()}`,
       day: 'numeric',
       timeZone: 'America/Bogota'
     });
-    
+
     const timeStr = startDate.toLocaleTimeString('es-CO', {
       hour: '2-digit',
       minute: '2-digit',
@@ -353,10 +349,10 @@ Responde:
   // ✅ Confirmar cancelación
   if (currentState === 'cancelation_confirm') {
     const normalized = body.toLowerCase().trim();
-    
+
     if (['1', 'si', 'sí', 'yes'].includes(normalized)) {
       const selectedAppointment = tempData.selectedAppointment;
-      
+
       if (!selectedAppointment) {
         return {
           message: '❌ Error: No se encontró la cita seleccionada. Escribe "menu" para reiniciar.',
@@ -366,7 +362,7 @@ Responde:
 
       // Procesar cancelación
       const result = await cancelAppointment(selectedAppointment._id, tempData.patient._id);
-      
+
       // Limpiar datos temporales
       delete tempData.cancelableAppointments;
       delete tempData.selectedAppointment;

@@ -37,6 +37,14 @@ const appointmentSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
+
+  },
+
+  eventId: {
+    type: String,
+    unique: true, // Evita duplicados
+    sparse: true, // Permite nulls únicos
+    index: true   // Índice para búsquedas rápidas
   }
 });
 
