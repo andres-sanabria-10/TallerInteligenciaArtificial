@@ -7,12 +7,22 @@ const appointmentSchema = new mongoose.Schema({
     ref: 'Patient',
     required: true
   },
-  date: {
-    type: Date,
+  doctorId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Doctor',
     required: true
   },
-  service: {
-    type: String, // Ej: "Limpieza", "Empaste", etc.
+  serviceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Service',
+    required: true
+  },
+  start: {
+    type: Date, // Fecha y hora de inicio (ej: 2025-06-01T08:30:00.000Z)
+    required: true
+  },
+  end: {
+    type: Date, // Fecha y hora de finalización (ej: 2025-06-01T09:00:00.000Z)
     required: true
   },
   status: {
