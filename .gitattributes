@@ -1,0 +1,14 @@
+# Forzar detección de lenguajes clave
+*.js linguist-detectable=true
+*.jsx linguist-detectable=true
+*.ts linguist-detectable=true
+*.tsx linguist-detectable=true
+*.py linguist-detectable=true
+*.css linguist-detectable=true
+*.html linguist-detectable=true
+*.sql linguist-detectable=true
+*.json linguist-detectable=true
+
+# Excluir archivos comunes que no cuentan como código fuente
+package-lock.json linguist-generated=true
+yarn.lock linguist-generated=true
